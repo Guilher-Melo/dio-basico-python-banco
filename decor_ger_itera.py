@@ -1,5 +1,8 @@
 from abc import ABC, abstractmethod
 from datetime import datetime
+from pathlib import Path
+
+ROOT_PATH = Path(__file__).parent
 
 
 class Conta:
@@ -82,6 +85,11 @@ class ContaCorrente(Conta):
             return super().sacar(valor_saque)
         return False
 
+    def __repr__(self) -> str:
+        return\
+            (f'/<{self.__class__.__name__}: ("{self.agencia}", "{self.numero}"\
+            ",{self.cliente.nome}")>')
+
     def __str__(self) -> str:
         return f"""
     Agência: {self.agencia}
@@ -106,6 +114,23 @@ class Historico:
                 "data": datetime.now().strftime('%d-%m-%Y %H:%M:%S:%f')
             }
         )
+
+    def gerar_relatorio(self, tipo_transacao=None):
+
+        for transacao in self.transacoes:
+            if (tipo_transacao is None or
+                    transacao['tipo'].lower() == tipo_transacao.lower()):
+                yield transacao
+
+    def transacoes_do_dia(self):
+        data_atual = datetime.now().date()
+        lista_transacoes_dia = []
+        for transacao in self._transacoes:
+            data_transacao = datetime.strptime(
+                transacao['data'], '%d-%m-%Y %H:%M:%S:%f').date()
+            if data_transacao == data_atual:
+                lista_transacoes_dia.append(data_atual)
+        return lista_transacoes_dia
 
 
 class Transacao(ABC):
@@ -134,6 +159,29 @@ class Deposito(Transacao):
             conta.historico.adicionar_transacao(self)
 
 
+class ContasIterador:
+    def __init__(self, contas):
+        self.contas = contas
+        self._index = 0
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        try:
+            conta = self.contas[self._index]
+            return f'''
+        Agência: {conta.agencia}
+        Número: {conta.numero}
+        Titular: {conta.cliente.nome}
+        Saldo: R$ {conta.saldo:.2f}
+'''
+        except IndexError:
+            raise StopIteration
+        finally:
+            self._index += 1
+
+
 class Saque(Transacao):
     def __init__(self, valor):
         self._valor = valor
@@ -154,8 +202,13 @@ class Cliente:
         self.endereco = endereco
         self.contas = []
 
-    def realizar_transacao(self, conta, transacao: Transacao):
-        transacao.registrar(conta)
+    def realizar_transacao(self, conta: Conta, transacao: Transacao):
+        LIMITE_TRANSACOES = 10
+        if len(conta.historico.transacoes_do_dia()) < LIMITE_TRANSACOES:
+            transacao.registrar(conta)
+        else:
+            print('Você excedeu o número de transições diárias!!')
+            return
 
     def adicionar_conta(self, conta):
         self.contas.append(conta)
@@ -167,6 +220,30 @@ class PessoaFisica(Cliente):
         self.nome = nome
         self.data_nascimento = data_nascimento
         super().__init__(endereco)
+
+    def __repr__(self) -> str:
+        return f'<{self.__class__.__name__}: {self.cpf}>'
+
+
+def log_transacao(funcao):
+    def envelope(*args, **kwargs):
+        resultado = funcao(*args, **kwargs)
+        data = datetime.now().strftime('%d-%m-%Y %H:%M:%S:%f')
+        print(f'Data transação:{data}')
+        print(f'Tipo de operação: {funcao.__name__}')
+        try:
+            with open(ROOT_PATH / 'log.txt', 'a', encoding='utf-8') as arquivo:
+                argumentos = []
+                for arg in args:
+                    for kwarg in kwargs.keys():
+                        argumentos.append(arg, kwarg)
+                log = f'{data} Função: {funcao.__name__} com argumentos: {
+                    args} e {kwargs}, retornou {resultado}\n'
+                arquivo.write(log)
+        except IOError as exc:
+            print(exc)
+        return resultado
+    return envelope
 
 
 def recuperar_conta_cliente(cliente):
@@ -182,6 +259,7 @@ def filtrar_clientes(cpf, clientes):
     return clientes_filtrados[0] if clientes_filtrados else None
 
 
+@log_transacao
 def fazer_operacao(clientes, operacao):
     cpf = int(input('Digite apenas os números do cpf do cliente: '))
     cliente = filtrar_clientes(cpf, clientes)
@@ -193,10 +271,12 @@ def fazer_operacao(clientes, operacao):
         valor = float(
             input('Digite o valor que você deseja sacar: '))
         transacao = Saque(valor)
+        fazer_operacao.__name__ = 'Saque'
     elif operacao == 'deposito':
         valor = float(
             input('Digite o valor que você deseja depositar: '))
         transacao = Deposito(valor)
+        fazer_operacao.__name__ = 'Depósito'
 
     conta = recuperar_conta_cliente(cliente)
     if not conta:
@@ -204,6 +284,7 @@ def fazer_operacao(clientes, operacao):
     cliente.realizar_transacao(conta, transacao)
 
 
+@log_transacao
 def exibir_extrato(clientes):
     cpf = int(input('Digite apenas os números do cpf do cliente: '))
     cliente = filtrar_clientes(cpf, clientes)
@@ -215,18 +296,24 @@ def exibir_extrato(clientes):
     conta = recuperar_conta_cliente(cliente)
     if not conta:
         return
-    transacoes = conta.historico.transacoes
+
     extrato = ""
-    if not transacoes:
+
+    tem_transacao = False
+
+    for transacao in conta.historico.gerar_relatorio():
+        tem_transacao = True
+        extrato += f'{transacao['data']}\n{transacao['tipo']}:\
+\nR${transacao['valor']:.2f}\n\n'
+
+    if not tem_transacao:
         extrato = "Não foram realizadas movimentações!"
-    else:
-        for transacao in transacoes:
-            extrato += f"\n{transacao['tipo']}:\n R${transacao['valor']:.2f}"
 
     print(extrato)
-    print(f'\nSaldo: R$ {conta.saldo:.2f}')
+    print(f'Saldo: R$ {conta.saldo:.2f}')
 
 
+@log_transacao
 def criar_cliente(clientes):
     cpf = int(input('Digite apenas os números do seu cpf: '))
     cliente = filtrar_clientes(cpf, clientes)
@@ -246,6 +333,7 @@ def criar_cliente(clientes):
     print('Cliente criado com sucesso!!')
 
 
+@log_transacao
 def criar_conta(numero_conta, clientes, contas):
     cpf = int(input('Digite o cpf do seu usuário: '))
     cliente = filtrar_clientes(cpf, clientes)
@@ -260,7 +348,7 @@ def criar_conta(numero_conta, clientes, contas):
 
 
 def listar_contas(contas):
-    for conta in contas:
+    for conta in ContasIterador(contas):
         print('\n')
         print(str(conta))
 
